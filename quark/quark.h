@@ -118,7 +118,7 @@ typedef union Color { // 24
     uint8_t   tick;
     uint8_t   repeat;
     uint8_t   counter;
-    uint8_t   step;
+    uint8_t   cidx;
   };
   uint8_t     data[24];
 } Color;

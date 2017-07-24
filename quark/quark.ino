@@ -385,19 +385,18 @@ void enter_sleep(void) {
 void load_mode(void) {
   uint16_t i = MODE_SIZE;
   while (--i) mode.data[i] = pgm_read_byte(&FACTORY[mode_idx][i]);
+  init_state();
 }
 
 void init_state(void) {
   // init global values
-  accel_tick = 0;
-
-  mode.velocity = 0;
-  mode.falloff  = mode.falloff_v[0];
-  mode.trigger  = mode.trigger_v[0];
-  mode.iv_s     = 0;
-  mode.iv_e     = 0;
-  mode.iv_f     = 0;
-
+  accel_tick       = 0;
+  mode.velocity    = 0;
+  mode.falloff     = mode.falloff_v[0];
+  mode.trigger     = mode.trigger_v[0];
+  mode.iv_s        = 0;
+  mode.iv_e        = 0;
+  mode.iv_f        = 0;
   mode.segment_num = 0;
   mode.strobe_num  = 0;
   mode.part        = 0;
@@ -421,11 +420,11 @@ void init_state(void) {
 
     // init color state all colors
     for (uint8_t j = 0; j < 8; j++) {
-      mode.segments[i].palette[j].timer = mode.segments[i].palette[j].timer_v[0];
-      mode.segments[i].palette[j].tick = 0;
-      mode.segments[i].palette[j].repeat = 0;
+      mode.segments[i].palette[j].timer   = mode.segments[i].palette[j].timer_v[0];
+      mode.segments[i].palette[j].tick    = 0;
+      mode.segments[i].palette[j].repeat  = 0;
       mode.segments[i].palette[j].counter = 0;
-      mode.segments[i].palette[j].step = 0;
+      mode.segments[i].palette[j].cidx    = 0;
     }
   }
 }
@@ -601,10 +600,7 @@ void handle_serial(void) {
         send_handshake();
       }
     } else if (cmd == SER_DISCONNECT) {
-      op_state = STATE_ON;
-      mode_idx = 0;
-      load_mode();
-      init_state();
+      goto_on();
     } else if (cmd == SER_INIT) {
       init_state();
     } else if (cmd == SER_VIEW_MODE) {
@@ -647,11 +643,11 @@ void render_color(Color *c, uint16_t rot) {
   if (c->type == COLOR_STATIC) {
     unhsv(&c->colors[0], rot, &frame);
   } else if (c->type == COLOR_COMPOUND) {
-    unhsv(&c->colors[c->step], rot, &frame);
+    unhsv(&c->colors[c->cidx], rot, &frame);
   } else if (c->type == COLOR_REACTIVE) {
     blend_f(&c->colors[mode.iv_s], &c->colors[mode.iv_e], mode.iv_f, rot, &frame);
   } else if (c->type == COLOR_MORPH) {
-    i = c->step >> 4;
+    i = c->cidx >> 4;
     j = i + 1;
     if (j >= c->numc) i = 0;
     blend(&c->colors[i], &c->colors[j], rot, c->counter, 100, &frame);
@@ -660,11 +656,11 @@ void render_color(Color *c, uint16_t rot) {
     c->counter = 1;
     i, j;
     if (c->dir == 0) {
-      i = c->step;
+      i = c->cidx;
       j = i + 1;
       if (j >= c->numc) j = 0;
     } else {
-      j = c->step;
+      j = c->cidx;
       i = j + 1;
       if (i >= c->numc) i = 0;
     }
@@ -675,7 +671,7 @@ void render_color(Color *c, uint16_t rot) {
   } else if (c->type == COLOR_ROTATE) {
     i = calc_hue_diff(c);
     x = c->counter;
-    if (c->step != 0) x = 100 - x;
+    if (c->cidx != 0) x = 100 - x;
     rot += interp(0, i, x, 100);
     unhsv(&c->colors[0], rot, &frame);
   } else if (c->type == COLOR_RAINBOW) {
@@ -691,8 +687,8 @@ void render_color(Color *c, uint16_t rot) {
 void tick_color(Color *c) {
   uint8_t r, s;
   if (c->type == COLOR_COMPOUND) {
-    c->step++;
-    if (c->step >= c->numc) c->step = 0;
+    c->cidx++;
+    if (c->cidx >= c->numc) c->cidx = 0;
   } else if (c->type == COLOR_MORPH || c->type == COLOR_ROTATE) {
     c->tick++;
     uint8_t steps = (c->type == COLOR_MORPH) ? c->numc : (c->dir & 0x2 == 0) ? 1 : 2;
@@ -703,9 +699,9 @@ void tick_color(Color *c) {
         c->counter++;
         if (c->counter >= 100) {
           c->counter = 0;
-          c->step++;
-          if (c->step >= steps) {
-            c->step = 0;
+          c->cidx++;
+          if (c->cidx >= steps) {
+            c->cidx = 0;
           }
         }
       }
@@ -728,24 +724,12 @@ uint8_t calc_step(void) {
   bool ovr = MSEG(change_mode) & 0b010;
   bool alt = MSEG(change_mode) & 0b100;
 
-  uint8_t s, e;
-  if (strobe) {
-    s = MSEG(strobe);
-    e = MSEG(strobe_end);
-  } else {
-    s = MSEG(blank);
-    e = MSEG(blank_end);
-  }
+  uint8_t s = (strobe) ? MSEG(strobe)     : MSEG(blank);
+  uint8_t e = (strobe) ? MSEG(strobe_end) : MSEG(blank_end);
   if (s == e) return s;
 
-  uint8_t x, d;
-  if (ovr) {
-    x = MSEG(change_num);
-    d = MSEG(change_count) - 1;
-  } else {
-    x = mode.strobe_num;
-    d = MSEG(strobe_count) - 1;
-  }
+  uint8_t x =  (ovr) ? MSEG(change_num)   : mode.strobe_num;
+  uint8_t d = ((ovr) ? MSEG(change_count) : MSEG(strobe_count)) - 1;
   if (!strobe) d--;
   if (x == 0) return s;
   if (d == 0) return s;
@@ -808,8 +792,8 @@ void render_pattern(void) {
         // when the segment changes, check all colors from the previous to see if they have played
         for (uint8_t cslot = 0; cslot < MSEG(numc); cslot++) {
           if (COLOR(cslot).type == COLOR_STREAK && COLOR(cslot).counter != 0) {
-            COLOR(cslot).step++;
-            if (COLOR(cslot).step >= COLOR(cslot).numc) COLOR(cslot).step = 0;
+            COLOR(cslot).cidx++;
+            if (COLOR(cslot).cidx >= COLOR(cslot).numc) COLOR(cslot).cidx = 0;
             COLOR(cslot).counter = 0;
           }
         }
@@ -825,11 +809,7 @@ void render_pattern(void) {
     if (mode.part != 0 && mode.strobe_num == MSEG(strobe_count) - 1) {
       mode.seg_len = MSEG(gap);
     } else if (MSEG(change_mode) == CHANGE_OFF) {
-      if (mode.part == 0) {
-        mode.seg_len = MSEG(strobe);
-      } else {
-        mode.seg_len = MSEG(blank);
-      }
+      mode.seg_len = (mode.part == 0) ? MSEG(strobe) : MSEG(blank);
     } else {
       mode.seg_len = calc_step();
     }
@@ -909,38 +889,34 @@ void handle_render(void) {
 // }}}
 
 // {{{ handle button
+void goto_on(void) {
+  op_state = STATE_ON;
+  mode_idx = 0;
+  load_mode();
+}
+
 void handle_button(void) {
   bool pressed = digitalRead(PIN_BUTTON) == LOW;
   bool changed = pressed != was_pressed;
 
   if (op_state == STATE_OFF) {
     if (pressed) {
-      if (since_press == 6000) {
-        /* flash(0); */
-      }
+      if (since_press == 6000) flash(0);
     } else if (changed) {
       if (since_press >= 6000) {
         EEPROM.update(ADDR_LOCKED, 1);
         enter_sleep();
       } else {
-        op_state = STATE_ON;
-        mode_idx = 0;
-        load_mode();
-        init_state();
+        goto_on();
       }
     }
   } else if (op_state == STATE_LOCKED) {
     if (pressed) {
-      if (since_press == 6000) {
-        /* flash(0); */
-      }
+      if (since_press == 6000) flash(8);
     } else if (changed) {
       if (since_press >= 6000) {
         EEPROM.update(ADDR_LOCKED, 0);
-        op_state = STATE_ON;
-        mode_idx = 0;
-        load_mode();
-        init_state();
+        goto_on();
       } else {
         enter_sleep();
       }
@@ -950,11 +926,8 @@ void handle_button(void) {
     } else if (changed) {
       if (since_press < 700) {
         mode_idx++;
-        if (mode_idx >= NUM_MODES) {
-          mode_idx = 0;
-        }
+        if (mode_idx >= NUM_MODES) mode_idx = 0;
         load_mode();
-        init_state();
       } else {
         enter_sleep();
       }
@@ -973,29 +946,24 @@ void setup(void) {
   power_down();
 
   ADCSRA = 0b10000100;                            // ADC enabled @ x16 prescaler
-
   pinMode(PIN_LDO, OUTPUT);                       // Enable accel pwr pin
   digitalWrite(PIN_LDO, HIGH);                    // Power on accel
-
   pinMode(PIN_R, OUTPUT);                         // Enable LED pins for output
   pinMode(PIN_G, OUTPUT);
   pinMode(PIN_B, OUTPUT);
-
   noInterrupts();                                 // Configure timers for fastest PWM
   TCCR0B = (TCCR0B & 0b11111000) | 0b001;         // no prescaler ~64/ms
   TCCR1B = (TCCR1B & 0b11111000) | 0b001;         // no prescaler ~32/ms
   sbi(TCCR1B, WGM12);                             // fast PWM ~64/ms
   interrupts();
-
   accel_init();                                   // Initialize the accelerometer
   wdt_enable(WDTO_15MS);                          // Enable the watchdog
-
   Serial.begin(115200);                           // Init serial connection
   send_handshake();
 
+  // init light states
   op_state = EEPROM.read(ADDR_LOCKED) ? STATE_LOCKED : STATE_OFF;
   load_mode();
-  init_state();                                   // Reset pattern vars
   accel_tick = 0;
   last_write = micros();
 }
@@ -1007,9 +975,7 @@ void loop(void) {
   handle_render();
 
   uint32_t cus = micros();
-  while (cus - last_write < LIMITER_US) {
-    cus = micros();
-  }
+  while (cus - last_write < LIMITER_US) cus = micros();
   last_write = cus;
 
   analogWrite(PIN_R, frame.r);
