@@ -9,6 +9,7 @@
 #include <avr/interrupt.h>
 #include <avr/pgmspace.h>
 #include <stdint.h>
+#include "factory.h"
 
 #define LIMITER_US        32000
 

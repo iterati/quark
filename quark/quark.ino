@@ -1,5 +1,4 @@
 #include "quark.h"
-#include "factory.h"
 
 // {{{ globals
 Mode          mode;
