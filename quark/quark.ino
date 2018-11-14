@@ -619,20 +619,18 @@ void handle_serial(void) {
 
 // {{{ handle render
 // {{{ render color
-uint16_t calc_hue_diff(Color *c) {
-  uint8_t h0 = c->colors[0].h;
-  uint8_t h1 = c->colors[1].h;
+uint16_t calc_hue_diff(uint8_t h1, uint8_t h2, uint8_t dir, uint8_t alt) {
   uint16_t rtn;
 
-  if (c->dir & 0x1 == 0) {
-    if (h1 <= h0) h1 += 24;
-    rtn = h1 - h0;
-  } else {
+  if (dir) {
     if (h0 <= h1) h0 += 24;
     rtn = h0 - h1;
+  } else {
+    if (h1 <= h0) h1 += 24;
+    rtn = h1 - h0;
   }
 
-  if (c->dir & 0x2 != 0) rtn <<= 1;
+  if (alt) rtn <<= 1;
   return rtn << 3;
 }
 
@@ -668,17 +666,25 @@ void render_color(Color *c, uint16_t rot) {
     x += mode.trip;
     blend(&c->colors[i], &c->colors[j], rot, x, d, &frame);
   } else if (c->type == COLOR_ROTATE) {
-    i = calc_hue_diff(c);
+    i = calc_hue_diff(c->colors[0].h, c->colors[1].h, c->dir & 0x1, c->dir & 0x2);
     x = c->counter;
     if (c->cidx != 0) x = 100 - x;
     rot += interp(0, i, x, 100);
     unhsv(&c->colors[0], rot, &frame);
   } else if (c->type == COLOR_RAINBOW) {
-    i = calc_hue_diff(c);
+    i = c->timer;
+    j = 0;
+    if (c->dir & 0x1 == 1) {
+      i = 192 - i;
+    }
+    if (c->dir & 0x2 == 1) {
+      j = i;
+      i = 0;
+    }
     d = mode.seg_len * MSEG(strobe_count);
     x = mode.seg_len * mode.strobe_num;
     x += mode.trip;
-    rot += interp(0, i, x, d);
+    rot += interp(i, j, x, d);
     unhsv(&c->colors[0], rot, &frame);
   }
 }
@@ -802,6 +808,7 @@ void render_pattern(void) {
           mode.segment_num++;
           if (mode.segment_num >= mode.nums) mode.segment_num = 0;
         }
+        if (MSEG(strobe_count) == 0) mode.part++;
       }
     }
     // calculate part length
